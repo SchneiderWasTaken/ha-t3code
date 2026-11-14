@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+# Ask Home Assistant to validate its configuration. Exits non-zero if invalid.
+set -euo pipefail
+
+result="$(ha-api POST config/core/check_config)"
+echo "${result}" | jq .
+[[ "$(echo "${result}" | jq -r .result)" == "valid" ]]

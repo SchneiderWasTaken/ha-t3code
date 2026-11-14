@@ -1,0 +1,151 @@
+#!/usr/bin/with-contenv bashio
+# shellcheck shell=bash
+# ==============================================================================
+# Prepare the agent environment, then run the T3 Code server.
+# ==============================================================================
+set -e
+
+readonly PORT=3773
+readonly HA_CONFIG=/homeassistant
+readonly USER_CONTEXT=/config/agent-context.md   # addon_config, user-editable
+readonly MCP_URL="http://supervisor/core/api/mcp"
+
+# --- Persistent locations ------------------------------------------------------
+# Everything under /data survives restarts and updates, so agent logins
+# (`claude auth login`, `codex login`, ...) and T3's threads/state stick.
+export HOME=/data/home
+export T3CODE_HOME=/data/t3
+export NPM_CONFIG_PREFIX=/data/npm-global
+export PATH="${NPM_CONFIG_PREFIX}/bin:${PATH}"
+mkdir -p "${HOME}" "${T3CODE_HOME}" "${NPM_CONFIG_PREFIX}"
+
+export T3CODE_LOG_LEVEL
+case "$(bashio::config 'log_level')" in
+    trace) T3CODE_LOG_LEVEL=Trace ;;
+    debug) T3CODE_LOG_LEVEL=Debug ;;
+    warning) T3CODE_LOG_LEVEL=Warning ;;
+    error|fatal) T3CODE_LOG_LEVEL=Error ;;
+    *) T3CODE_LOG_LEVEL=Info ;;
+esac
+
+if bashio::config.false 'telemetry'; then
+    export T3CODE_TELEMETRY_ENABLED=false
+fi
+
+# --- User-supplied environment variables --------------------------------------
+for i in $(seq 0 $(( $(bashio::config 'env_vars | length') - 1 ))); do
+    name="$(bashio::config "env_vars[${i}].name")"
+    value="$(bashio::config "env_vars[${i}].value")"
+    export "${name}=${value}"
+    bashio::log.info "Set environment variable ${name}"
+done
+
+# --- Extra packages (container fs is ephemeral, so apt runs every start) ------
+if bashio::config.has_value 'extra_apt_packages'; then
+    mapfile -t apt_pkgs < <(bashio::config 'extra_apt_packages')
+    bashio::log.info "Installing apt packages: ${apt_pkgs[*]}"
+    apt-get update -qq && apt-get install -y -qq --no-install-recommends "${apt_pkgs[@]}" \
+        || bashio::log.warning "apt install failed; continuing"
+fi
+
+# npm globals live in /data, so they persist and T3's "Update now" sticks.
+if bashio::config.has_value 'extra_npm_packages'; then
+    mapfile -t npm_pkgs < <(bashio::config 'extra_npm_packages')
+    bashio::log.info "Ensuring npm packages: ${npm_pkgs[*]}"
+    npm install -g --no-fund --no-audit "${npm_pkgs[@]}" \
+        || bashio::log.warning "npm install failed; continuing"
+fi
+
+# --- Git: the HA config dir is the default project ----------------------------
+git config --global --get user.name >/dev/null || git config --global user.name "T3 Code (Home Assistant)"
+git config --global --get user.email >/dev/null || git config --global user.email "t3code@homeassistant.local"
+git config --global --replace-all safe.directory '*'
+
+# --- Agent context: tell every harness where it is and how to act -------------
+if bashio::config.true 'agent_context'; then
+    context="$(cat /usr/share/t3code-ha/AGENTS.md)"
+    if [[ -f "${USER_CONTEXT}" ]]; then
+        context+=$'\n\n## Notes from the owner\n\n'"$(cat "${USER_CONTEXT}")"
+    fi
+    mkdir -p "${HOME}/.claude" "${HOME}/.codex" "${HOME}/.config/opencode"
+    printf '%s\n' "${context}" > "${HOME}/.claude/CLAUDE.md"
+    printf '%s\n' "${context}" > "${HOME}/.codex/AGENTS.md"
+    printf '%s\n' "${context}" > "${HOME}/.config/opencode/AGENTS.md"
+fi
+
+# --- Home Assistant MCP server for each harness --------------------------------
+# Requires the "Model Context Protocol Server" integration enabled in HA.
+# SUPERVISOR_TOKEN changes between starts, so this is rewritten every time.
+configure_mcp() {
+    local claude_json="${HOME}/.claude.json"
+    local opencode_json="${HOME}/.config/opencode/opencode.json"
+    local codex_toml="${HOME}/.codex/config.toml"
+    local begin="# >>> ha-t3code managed >>>" end="# <<< ha-t3code managed <<<"
+
+    [[ -s "${claude_json}" ]] || echo '{}' > "${claude_json}"
+    jq --arg url "${MCP_URL}" --arg tok "${SUPERVISOR_TOKEN}" \
+        '.mcpServers.homeassistant = {type: "http", url: $url, headers: {Authorization: ("Bearer " + $tok)}}' \
+        "${claude_json}" > "${claude_json}.tmp" && mv "${claude_json}.tmp" "${claude_json}"
+
+    [[ -s "${opencode_json}" ]] || echo '{"$schema": "https://opencode.ai/config.json"}' > "${opencode_json}"
+    jq --arg url "${MCP_URL}" --arg tok "${SUPERVISOR_TOKEN}" \
+        '.mcp.homeassistant = {type: "remote", url: $url, enabled: true, headers: {Authorization: ("Bearer " + $tok)}}' \
+        "${opencode_json}" > "${opencode_json}.tmp" && mv "${opencode_json}.tmp" "${opencode_json}"
+
+    # Codex reads the token from the server's environment, so nothing secret
+    # is written to disk here.
+    touch "${codex_toml}"
+    sed -i "/^${begin}\$/,/^${end}\$/d" "${codex_toml}"
+    cat >> "${codex_toml}" <<EOF
+${begin}
+[mcp_servers.homeassistant]
+url = "${MCP_URL}"
+bearer_token_env_var = "SUPERVISOR_TOKEN"
+${end}
+EOF
+}
+
+remove_mcp() {
+    local f
+    for f in "${HOME}/.claude.json:.mcpServers" "${HOME}/.config/opencode/opencode.json:.mcp"; do
+        local file="${f%%:*}" key="${f##*:}"
+        [[ -s "${file}" ]] || continue
+        jq "del(${key}.homeassistant)" "${file}" > "${file}.tmp" && mv "${file}.tmp" "${file}"
+    done
+    [[ -f "${HOME}/.codex/config.toml" ]] && \
+        sed -i '/^# >>> ha-t3code managed >>>$/,/^# <<< ha-t3code managed <<<$/d' "${HOME}/.codex/config.toml"
+    return 0
+}
+
+if bashio::config.true 'homeassistant_mcp'; then
+    configure_mcp
+    bashio::log.info "Home Assistant MCP server wired into Claude Code, Codex and OpenCode"
+else
+    remove_mcp
+fi
+
+# --- Pairing link --------------------------------------------------------------
+# T3 Code authorizes browsers by pairing. Print a fresh one-time link to the
+# add-on log once the server is listening.
+(
+    for _ in $(seq 1 60); do
+        if curl -fs -o /dev/null "http://127.0.0.1:${PORT}/" 2>/dev/null; then
+            bashio::log.info "T3 Code is up. One-time pairing link for a new browser:"
+            t3 pair --label "Home Assistant add-on" 2>&1 || bashio::log.warning "Could not mint a pairing link"
+            bashio::log.info "If the link shows a 172.30.x.x address, replace it with your Home Assistant host and port ${PORT}."
+            exit 0
+        fi
+        sleep 2
+    done
+    bashio::log.warning "T3 Code did not answer on port ${PORT} within 2 minutes"
+) &
+
+# --- Run -----------------------------------------------------------------------
+cd "${HA_CONFIG}"
+bashio::log.info "Starting T3 Code $(t3 --version 2>/dev/null || echo '') on port ${PORT}"
+exec t3 serve \
+    --mode web \
+    --host 0.0.0.0 \
+    --port "${PORT}" \
+    --no-browser \
+    --auto-bootstrap-project-from-cwd

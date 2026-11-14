@@ -1,0 +1,57 @@
+name: T3 Code
+version: "0.1.0"
+slug: t3code
+description: >-
+  A web UI for coding agents (Claude Code, Codex, OpenCode, ...) with your
+  Home Assistant configuration as its workspace.
+url: https://github.com/SchneiderWasTaken/ha-t3code/tree/main/t3code
+arch:
+  - aarch64
+  - amd64
+# s6-overlay from the HA base image is PID 1.
+init: false
+startup: application
+boot: auto
+
+# T3 Code's web client builds API/WebSocket URLs from window.location.origin,
+# so it can't run under the Ingress sub-path yet. Direct port for now.
+# See docs/ARCHITECTURE.md -> "Ingress".
+ports:
+  3773/tcp: 3773
+ports_description:
+  3773/tcp: T3 Code web UI and API
+webui: "http://[HOST]:[PORT:3773]"
+
+# Exposes SUPERVISOR_TOKEN and the http://supervisor/core/api proxy, which
+# the agent helpers and the Home Assistant MCP wiring use.
+homeassistant_api: true
+
+map:
+  - type: homeassistant_config
+    read_only: false
+  - type: share
+    read_only: false
+  - type: addon_config
+    read_only: false
+
+options:
+  log_level: info
+  telemetry: false
+  homeassistant_mcp: true
+  agent_context: true
+  extra_apt_packages: []
+  extra_npm_packages: []
+  env_vars: []
+
+schema:
+  log_level: list(trace|debug|info|notice|warning|error|fatal)
+  telemetry: bool
+  homeassistant_mcp: bool
+  agent_context: bool
+  extra_apt_packages:
+    - str
+  extra_npm_packages:
+    - str
+  env_vars:
+    - name: match(^[A-Za-z_][A-Za-z0-9_]*$)
+      value: str

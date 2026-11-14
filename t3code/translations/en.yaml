@@ -1,0 +1,33 @@
+configuration:
+  log_level:
+    name: Log level
+    description: How much the T3 Code server logs.
+  telemetry:
+    name: Product telemetry
+    description: >-
+      Send T3 Code's anonymous usage events (provider, model, token totals) to
+      its developers. No prompts or file contents are sent either way.
+  homeassistant_mcp:
+    name: Connect agents to Home Assistant (MCP)
+    description: >-
+      Register Home Assistant's MCP server with Claude Code, Codex and
+      OpenCode. Needs the "Model Context Protocol Server" integration enabled.
+  agent_context:
+    name: Home Assistant agent instructions
+    description: >-
+      Give every agent standing instructions about this environment. Add your
+      own in agent-context.md in this add-on's config folder.
+  extra_apt_packages:
+    name: Extra Debian packages
+    description: Installed on every start.
+  extra_npm_packages:
+    name: Extra npm packages
+    description: >-
+      Installed globally into persistent storage, e.g. other agent CLIs.
+  env_vars:
+    name: Environment variables
+    description: >-
+      Passed to T3 Code and every agent it starts, e.g. ANTHROPIC_API_KEY or
+      OPENAI_API_KEY.
+network:
+  3773/tcp: T3 Code web UI and API
