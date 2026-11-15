@@ -10,8 +10,6 @@ arch:
   - amd64
 # s6-overlay from the HA base image is PID 1.
 init: false
-startup: application
-boot: auto
 
 # T3 Code's web client builds API/WebSocket URLs from window.location.origin,
 # so it can't run under the Ingress sub-path yet. Direct port for now.
