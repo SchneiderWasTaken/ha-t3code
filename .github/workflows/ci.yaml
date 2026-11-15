@@ -4,12 +4,17 @@ on:
   push:
     branches: [main]
   pull_request:
+  workflow_dispatch:
+
+env:
+  REGISTRY: ghcr.io/schneiderwastaken
+  ADDON: t3code
 
 jobs:
   lint:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Lint add-on config
         uses: frenck/action-addon-linter@v2
         with:
@@ -21,18 +26,65 @@ jobs:
             t3code/rootfs/etc/s6-overlay/s6-rc.d/t3code/run \
             t3code/rootfs/etc/s6-overlay/s6-rc.d/t3code/finish
 
+  # Builds each architecture on a native runner (no QEMU). On main, the
+  # images are pushed to GHCR so Home Assistant pulls them instead of
+  # building on the device.
   build:
-    runs-on: ubuntu-latest
     needs: lint
     strategy:
+      fail-fast: false
       matrix:
-        arch: [amd64, aarch64]
+        include:
+          - arch: amd64
+            platform: linux/amd64
+            runner: ubuntu-24.04
+          - arch: aarch64
+            platform: linux/arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+      packages: write
     steps:
-      - uses: actions/checkout@v4
-      - name: Test build (${{ matrix.arch }})
-        uses: home-assistant/builder@2025.03.0
+      - uses: actions/checkout@v5
+
+      - name: Read add-on build settings
+        id: meta
+        run: |
+          {
+            echo "version=$(yq -r '.version' "${ADDON}/config.yaml")"
+            echo "build_from=$(yq -r '.build_from.${{ matrix.arch }}' "${ADDON}/build.yaml")"
+            echo "t3code_version=$(yq -r '.args.T3CODE_VERSION' "${ADDON}/build.yaml")"
+            echo "node_major=$(yq -r '.args.NODE_MAJOR' "${ADDON}/build.yaml")"
+            echo "agent_npm_packages=$(yq -r '.args.AGENT_NPM_PACKAGES' "${ADDON}/build.yaml")"
+          } >> "$GITHUB_OUTPUT"
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+        uses: docker/login-action@v3
         with:
-          args: |
-            --test \
-            --${{ matrix.arch }} \
-            --target /data/t3code
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build${{ github.ref == 'refs/heads/main' && github.event_name != 'pull_request' && ' and push' || '' }} (${{ matrix.arch }})
+        uses: docker/build-push-action@v6
+        with:
+          context: ${{ env.ADDON }}
+          platforms: ${{ matrix.platform }}
+          push: ${{ github.event_name != 'pull_request' && github.ref == 'refs/heads/main' }}
+          provenance: false
+          build-args: |
+            BUILD_FROM=${{ steps.meta.outputs.build_from }}
+            BUILD_ARCH=${{ matrix.arch }}
+            BUILD_VERSION=${{ steps.meta.outputs.version }}
+            T3CODE_VERSION=${{ steps.meta.outputs.t3code_version }}
+            NODE_MAJOR=${{ steps.meta.outputs.node_major }}
+            AGENT_NPM_PACKAGES=${{ steps.meta.outputs.agent_npm_packages }}
+          tags: |
+            ${{ env.REGISTRY }}/${{ matrix.arch }}-addon-${{ env.ADDON }}:${{ steps.meta.outputs.version }}
+            ${{ env.REGISTRY }}/${{ matrix.arch }}-addon-${{ env.ADDON }}:latest
+          cache-from: type=gha,scope=${{ matrix.arch }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.arch }}

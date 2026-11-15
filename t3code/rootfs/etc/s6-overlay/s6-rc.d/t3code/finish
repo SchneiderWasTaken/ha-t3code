@@ -4,7 +4,8 @@
 # Take down the container if the T3 Code server exits unexpectedly, so the
 # Supervisor's watchdog can restart it.
 # ==============================================================================
-readonly exit_code_container=$(</run/s6-linux-init-container-results/exitcode)
+exit_code_container=$(</run/s6-linux-init-container-results/exitcode)
+readonly exit_code_container
 readonly exit_code_service="${1}"
 readonly exit_code_signal="${2}"
 

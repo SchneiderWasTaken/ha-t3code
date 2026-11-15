@@ -44,8 +44,9 @@ done
 if bashio::config.has_value 'extra_apt_packages'; then
     mapfile -t apt_pkgs < <(bashio::config 'extra_apt_packages')
     bashio::log.info "Installing apt packages: ${apt_pkgs[*]}"
-    apt-get update -qq && apt-get install -y -qq --no-install-recommends "${apt_pkgs[@]}" \
-        || bashio::log.warning "apt install failed; continuing"
+    if ! { apt-get update -qq && apt-get install -y -qq --no-install-recommends "${apt_pkgs[@]}"; }; then
+        bashio::log.warning "apt install failed; continuing"
+    fi
 fi
 
 # npm globals live in /data, so they persist and T3's "Update now" sticks.
@@ -87,7 +88,7 @@ configure_mcp() {
         '.mcpServers.homeassistant = {type: "http", url: $url, headers: {Authorization: ("Bearer " + $tok)}}' \
         "${claude_json}" > "${claude_json}.tmp" && mv "${claude_json}.tmp" "${claude_json}"
 
-    [[ -s "${opencode_json}" ]] || echo '{"$schema": "https://opencode.ai/config.json"}' > "${opencode_json}"
+    [[ -s "${opencode_json}" ]] || jq -n '{"$schema": "https://opencode.ai/config.json"}' > "${opencode_json}"
     jq --arg url "${MCP_URL}" --arg tok "${SUPERVISOR_TOKEN}" \
         '.mcp.homeassistant = {type: "remote", url: $url, enabled: true, headers: {Authorization: ("Bearer " + $tok)}}' \
         "${opencode_json}" > "${opencode_json}.tmp" && mv "${opencode_json}.tmp" "${opencode_json}"
