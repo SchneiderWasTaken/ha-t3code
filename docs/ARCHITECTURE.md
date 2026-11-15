@@ -4,84 +4,112 @@
 
 This project doesn't build an agent loop. It packages an **interface**
 (T3 Code) and gives it a Home Assistant-shaped workspace. The **harnesses**
-are the agent CLIs T3 Code already knows how to drive:
+are the agent CLIs T3 Code already drives (Claude Code, Codex, OpenCode, any
+ACP agent). Multiple inference providers come from T3 itself: each harness
+brings its own model access, and T3 can hold several instances of a provider
+with different keys or base URLs.
 
 ```
- Browser / T3 phone app
-          │  HTTP + WebSocket (paired device auth)
-          ▼
-┌──────────────── add-on container ─────────────────┐
-│  t3 serve  (T3 Code server + bundled web UI)       │
-│     │ spawns / talks to                            │
-│     ├── claude   (Claude Code)  ┐                  │
-│     ├── codex    (Codex CLI)    ├─ harnesses       │
-│     ├── opencode (OpenCode)     │  = "providers"   │
-│     └── …any ACP agent          ┘                  │
-│            │ files            │ MCP / REST         │
-│            ▼                  ▼                    │
-│     /homeassistant      http://supervisor/core/api │
-└────────────────────────────────────────────────────┘
+ HA sidebar (any HA user)
+      │  HA login, then Supervisor Ingress: /api/hassio_ingress/<token>/…
+      ▼        + X-Remote-User-Id / -Name / -Display-Name
+┌──────────────────────── add-on container ─────────────────────────┐
+│ gateway :8099 (t3code/gateway/server.mjs)                         │
+│   • trusts only the Supervisor; refuses requests without an HA user│
+│   • serves T3's web app, built with our patches + ingress shim     │
+│   • one `t3 serve` per HA user, started on demand                  │
+│   • signs in for the user; T3 session cookie never leaves gateway  │
+│        │                       │                                  │
+│        ▼                       ▼                                  │
+│  t3 serve (user A) :3801   t3 serve (user B) :3802   …            │
+│        │ spawns claude / codex / opencode …                       │
+│        ▼                                                          │
+│  /homeassistant (admins)        http://supervisor/core/api (MCP)  │
+└───────────────────────────────────────────────────────────────────┘
+ optional: direct port 3773 ─▶ one chosen user's t3 serve (T3 pairing)
 ```
 
-Multiple inference providers come from T3 Code itself: each harness brings
-its own model access (subscription login or API key), and T3 lets you add
-several instances of a provider with different keys or base URLs, e.g.
-Claude Code against OpenRouter, a local model through OpenCode, and so on.
+## Carrying patches on T3 Code
 
-What this repo owns is the glue:
+We pin a T3 Code release (`T3CODE_VERSION` in `t3code/build.yaml`) and use:
 
-| Piece | Where |
-| --- | --- |
-| Packaging T3 + harnesses for HA (glibc base, arch mapping, checksum) | `t3code/Dockerfile`, `t3code/build.yaml` |
-| Persistent state (`HOME`, `T3CODE_HOME`, npm prefix under `/data`) | `rootfs/.../t3code/run` |
-| HA workspace (`/homeassistant` as the default project) | `config.yaml` `map`, `run` |
-| HA tools for agents (MCP wiring, `ha-api`, `ha-check-config`) | `run`, `rootfs/usr/local/bin` |
-| HA-specific agent instructions | `rootfs/usr/share/t3code-ha/AGENTS.md` |
+- the **official release binary** for the server, and
+- T3's **web app built from source at the same tag**, with
+  `t3code/patches/*.patch` applied and Vite's `--base ./`.
 
-## Upstream tracking
+Ingress needs the app to work under a sub-path. Most of that is solved
+without touching T3's source: the gateway injects `ingress-shim.js`, which
+rewrites T3's own same-origin URLs into the Ingress path at the browser
+APIs. The only source patch keeps routes in the URL hash (as T3's Electron
+build already does). Auth needs no patch: T3's browser login is an HttpOnly
+cookie, so the gateway holds it and attaches it while proxying.
 
-T3 Code is consumed as its published release binary, pinned by
-`T3CODE_VERSION` in `build.yaml` and verified against the release's
-`SHA256SUMS`. Bumping T3 is a one-line change plus a changelog entry.
-We don't fork until something below needs it.
+### Keeping up with upstream
 
-## Open questions / roadmap
+`.github/workflows/upstream.yaml` runs daily:
 
-### Ingress (sidebar panel)
+1. New T3 Code release? Create `upstream/t3code-v<version>`, bump
+   `T3CODE_VERSION`, `NODE_BUILD_VERSION` (from upstream's `engines.node`)
+   and the add-on version.
+2. Run `scripts/verify-upstream.sh`: apply patches, build the web app, run
+   the end-to-end browser test (`tests/e2e/run.mjs`) against T3 from source
+   behind the gateway and a fake Ingress.
+3. If that fails, run Claude (`anthropics/claude-code-action`) with the
+   failure log and `CLAUDE.md`, asking it to regenerate patches or adapt the
+   gateway, without weakening the test. Then verify again.
+4. Push the branch, open a PR stating whether it passed first time, passed
+   after Claude's repair, or still needs a human, and start CI (lint, e2e,
+   image builds) on it. The job fails visibly if it's still broken.
 
-The thing that would make this feel native. Ingress serves the add-on at
-`/api/hassio_ingress/<token>/` and authenticates the HA user. Today it
-doesn't work because:
+Nothing merges automatically; a person reviews the PR. Claude needs a
+`CLAUDE_CODE_OAUTH_TOKEN` (from `claude setup-token`) or `ANTHROPIC_API_KEY`
+repository secret.
 
-1. The web client derives API/WebSocket URLs from `window.location.origin`
-   (`apps/web/src/environments/primary/target.ts`, `httpLayer.ts`) and loads
-   assets from `/`, so everything misses the sub-path.
-2. T3 has its own pairing auth; behind Ingress we'd want to trust HA's
-   session instead.
+## Multi-user roadmap
 
-Options, cheapest first:
+Decisions so far: agent logins are shared (household subscriptions), with an
+option for a user to bring their own; and each person may change exactly
+what their Home Assistant account is allowed to change, with no extra
+approval step.
 
-- **Upstream a base-path setting** (`T3CODE_BASE_PATH` / `X-Ingress-Path`
-  aware). Best outcome; worth an issue on pingdotgg/t3code.
-- **Patch at build time** (build web from source with Vite `base` and a
-  patched origin helper). Means building the monorepo in CI.
-- **Rewrite proxy** (nginx `sub_filter`) in front of T3. Fragile with a
-  modern SPA plus WebSockets; last resort.
+### Done (0.2.0)
 
-For auth behind Ingress, the add-on could mint a pairing token on the
-first Ingress request (Ingress traffic only comes from `172.30.32.2`) so the
-HA user is paired transparently.
+- Sidebar via Ingress, no pairing, per-user T3 servers keyed on the HA user
+  id. Admin-only (`panel_admin: true` and checked again in the gateway).
 
-### Other items
+### Phase 2: non-admin users get their own space
 
-- Prebuilt multi-arch images on GHCR (`image:` in `config.yaml`) so users
-  don't build locally; installs are slow on a Pi otherwise.
-- Verify the Supervisor proxy streams MCP responses correctly (Streamable
-  HTTP / SSE); fall back to a direct `homeassistant:8123` URL with a
-  long-lived token option if not.
-- Optional git auto-init and pre-change snapshot for `/homeassistant`.
-- Optional HA config-check hook that harnesses run after edits (Claude Code
-  hooks, Codex notify).
-- `hassio_api` + backup integration: snapshot before a session that edits
-  config.
-- Expose T3 Connect / Tailscale options for remote access.
+Home Assistant's permission model is effectively admin vs non-admin. For
+files, that means non-admins can't touch the config directory at all, so:
+
+- **Admins** keep today's setup: `/homeassistant` as the workspace, the
+  add-on's API access.
+- **Non-admins** get a private workspace (`/data/users/<id>/workspace`, a git
+  repo), no access to `/homeassistant` (which also holds `secrets.yaml`),
+  and agents acting **as them** in Home Assistant: their T3 server and
+  agents get *their* access token instead of `SUPERVISOR_TOKEN`, so Home
+  Assistant enforces their permissions on every call. The token comes from
+  a one-time Home Assistant sign-in (OAuth) the gateway runs for them, kept
+  as a refresh token.
+- **Isolation:** each user's T3 server and agents run as their own Linux
+  user, so one user's agents can't read another's workspace or threads.
+- **Shared logins:** agent credentials are provided to every user's
+  agents (e.g. `CLAUDE_CODE_OAUTH_TOKEN` from `claude setup-token`, API keys
+  via env), with a per-user override.
+- `panel_admin: false` once this ships, so the panel shows for everyone.
+
+### Phase 3: getting work into Home Assistant
+
+What a non-admin builds lands through what Home Assistant lets *them* do
+via the API (entity control, and whatever else their account permits).
+Things HA only lets admins do (YAML packages, custom cards in `www/`,
+dashboards, custom integrations) stay admin actions; a non-admin can hand an
+admin a ready-made change from their workspace.
+
+## Other ideas
+
+- Ask upstream for sub-path support (would let us drop the patch).
+- Verify the Supervisor proxy streams MCP responses (Streamable HTTP/SSE)
+  well enough for the Home Assistant MCP server.
+- Snapshot `/homeassistant` (git or HA backup) before an agent session.
+- A config-check hook that harnesses run after edits.

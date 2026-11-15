@@ -1,4 +1,24 @@
 ARG BUILD_FROM
+ARG NODE_BUILD_VERSION=26.13.1
+
+# ---------------------------------------------------------------------------
+# Stage 1: T3 Code's web app, built from source with our patches so it works
+# under Home Assistant Ingress. The output is plain static files, so this
+# stage always runs on the build machine's own architecture.
+# ---------------------------------------------------------------------------
+FROM --platform=$BUILDPLATFORM node:${NODE_BUILD_VERSION}-bookworm-slim AS web
+ARG T3CODE_VERSION
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates git \
+    && rm -rf /var/lib/apt/lists/*
+COPY patches /build/patches
+COPY scripts/build-web.sh /build/build-web.sh
+RUN /build/build-web.sh "${T3CODE_VERSION}" /build/patches /out/web /build/t3code \
+    && rm -rf /build/t3code
+
+# ---------------------------------------------------------------------------
+# Stage 2: the add-on.
+# ---------------------------------------------------------------------------
 FROM ${BUILD_FROM}
 
 ARG BUILD_ARCH
@@ -43,6 +63,8 @@ RUN if [ -n "${AGENT_NPM_PACKAGES}" ]; then \
     fi \
     && npm cache clean --force
 
+COPY --from=web /out/web /opt/t3code-web
+COPY gateway /opt/gateway
 COPY rootfs /
 RUN chmod +x /etc/s6-overlay/s6-rc.d/t3code/run \
               /etc/s6-overlay/s6-rc.d/t3code/finish \

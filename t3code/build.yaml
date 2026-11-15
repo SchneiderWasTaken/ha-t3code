@@ -4,7 +4,11 @@ build_from:
   aarch64: ghcr.io/home-assistant/aarch64-base-debian:bookworm
   amd64: ghcr.io/home-assistant/amd64-base-debian:bookworm
 args:
+  # Upstream T3 Code release. Used for both the server binary and the web app
+  # source; .github/workflows/upstream.yaml bumps it.
   T3CODE_VERSION: "0.1.9"
+  # Node used to build T3's web app; tracks upstream's engines.node.
+  NODE_BUILD_VERSION: "26.13.1"
   NODE_MAJOR: "22"
   # Agent harnesses baked into the image, pinned so a build is reproducible
   # and a compromised upstream release can't slip in unreviewed.

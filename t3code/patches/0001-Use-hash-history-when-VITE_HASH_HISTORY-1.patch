@@ -1,0 +1,27 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: ha-t3code <ha-t3code@users.noreply.github.com>
+Date: Sun, 15 Nov 2026 01:12:22 +0000
+Subject: [PATCH] Use hash history when VITE_HASH_HISTORY=1
+
+Home Assistant Ingress serves the web app under a sub-path; keep routes in
+the URL hash, as the Electron build already does.
+---
+ apps/web/src/appInit.tsx | 5 ++++-
+ 1 file changed, 4 insertions(+), 1 deletion(-)
+
+diff --git a/apps/web/src/appInit.tsx b/apps/web/src/appInit.tsx
+index 3be9175c..e0a605c4 100644
+--- a/apps/web/src/appInit.tsx
++++ b/apps/web/src/appInit.tsx
+@@ -170,7 +170,10 @@ export function startAppServices(): AppRouter {
+   startProviderAuthDelivery();
+ 
+   // Electron loads the app from a file-backed shell, so hash history avoids path resolution issues.
+-  const router = getRouter(isElectron ? createHashHistory() : createBrowserHistory());
++  // ha-t3code: under Home Assistant Ingress the app lives at a sub-path, so
++  // routes go in the hash, as they already do for Electron.
++  const useHashHistory = isElectron || import.meta.env.VITE_HASH_HISTORY === "1";
++  const router = getRouter(useHashHistory ? createHashHistory() : createBrowserHistory());
+ 
+   if (isElectron) {
+     syncDocumentElectronPlatformClasses(navigator.platform);

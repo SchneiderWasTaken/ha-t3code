@@ -12,14 +12,22 @@ drives, and they use your own subscriptions or API keys.
 ## First start
 
 1. Install and start the add-on.
-2. Open the **Log** tab. Once the server is up it prints a one-time
-   **pairing link**. If the address in it starts with `172.30.`, swap it for
-   your Home Assistant address, keeping port `3773`.
-3. Open the link in your browser. That browser is now paired; you won't need
-   a link again unless you clear its storage.
+2. Open **T3 Code** from the Home Assistant sidebar.
 
-Restart the add-on to get a fresh pairing link for another device, or add
-devices from **Settings → Sharing & access** in T3 Code.
+That's it: Home Assistant handles sign-in, and each Home Assistant user gets
+their own T3 Code (own threads, settings and history). Agent logins are
+shared, so everyone uses the subscriptions you sign in with. For now the
+panel is limited to administrators; spaces for other household members are
+planned (see the project's docs/ARCHITECTURE.md).
+
+### Direct access (optional)
+
+To use the T3 Code phone apps or reach it over Tailscale without Home
+Assistant, open a port for `3773/tcp` in the add-on's **Network** section and
+set **direct_access_user** to the Home Assistant username whose T3 Code it
+should open. That port uses T3's own pairing: the add-on log prints a
+one-time pairing token on start. It's plain HTTP, so use it over Tailscale or
+behind an HTTPS proxy, never forwarded on your router.
 
 ## Signing in to agents
 
@@ -64,18 +72,19 @@ This add-on gives AI agents a shell, write access to your configuration and
 an API token that can control everything in Home Assistant. Treat access to
 it like admin access to Home Assistant.
 
-- **Who can reach it.** Port 3773 is open on your home network (and your
-  tailnet, if Home Assistant runs Tailscale). Don't forward it on your
-  router. A browser only gets in after pairing with a one-time link from the
-  add-on log, which only Home Assistant admins can read.
-- **Use an encrypted path.** The port is plain HTTP. Prefer Tailscale or an
-  HTTPS reverse proxy over connecting across Wi-Fi.
+- **Who can reach it.** Through the sidebar, only Home Assistant
+  administrators, signed in by Home Assistant. The gateway only accepts
+  requests that come through Home Assistant. Nothing listens on your
+  network unless you enable the optional direct port.
+- **Direct port.** If you enable it, it's plain HTTP protected only by
+  pairing. Use it over Tailscale or an HTTPS reverse proxy.
 - **Keep approvals on.** Entity names, device attributes and files are text
   an agent reads, and a hostile one can try to steer it ("prompt
   injection"). Leave T3 Code's permission mode on approval for commands and
   service calls; don't use full-auto modes here.
 - **Review paired devices** under **Settings → Sharing & access** in T3 Code
-  and remove ones you don't recognise.
+  and remove ones you don't recognise. Sidebar sessions appear there as
+  "Home Assistant: <name>".
 - **Backups.** Agent logins and the `env_vars` option are stored in the
   add-on's data, so they're in Home Assistant backups. Keep backups
   encrypted (the default on current Home Assistant).
@@ -87,6 +96,7 @@ it like admin access to Home Assistant.
 | Option | Default | |
 | --- | --- | --- |
 | `log_level` | `info` | Server log verbosity. |
+| `direct_access_user` | – | HA username the optional direct port opens. |
 | `telemetry` | `false` | T3 Code's anonymous product usage events. |
 | `homeassistant_mcp` | `true` | Register HA's MCP server with the agents. |
 | `agent_context` | `true` | Standing instructions for agents. |
@@ -96,7 +106,8 @@ it like admin access to Home Assistant.
 
 ## Known limitations
 
-- **No Ingress (sidebar panel) yet.** T3 Code's web client assumes it is
-  served from the root of its origin, which Ingress doesn't allow. Use the
-  **Open Web UI** button or the port directly.
+- **Administrators only, for now.** Non-admin users see a "not available yet"
+  page.
 - **amd64 and aarch64 only.** T3 Code doesn't publish 32-bit builds.
+- The sidebar runs a lightly patched build of T3 Code's web app (see the
+  repository's `t3code/patches/`), kept in step with each T3 Code release.

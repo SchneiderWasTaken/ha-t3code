@@ -5,7 +5,6 @@
 # ==============================================================================
 set -e
 
-readonly PORT=3773
 readonly HA_CONFIG=/homeassistant
 readonly USER_CONTEXT=/config/agent-context.md   # addon_config, user-editable
 readonly MCP_URL="http://supervisor/core/api/mcp"
@@ -129,28 +128,27 @@ else
     remove_mcp
 fi
 
-# --- Pairing link --------------------------------------------------------------
-# T3 Code authorizes browsers by pairing. Print a fresh one-time link to the
-# add-on log once the server is listening.
-(
-    for _ in $(seq 1 60); do
-        if curl -fs -o /dev/null "http://127.0.0.1:${PORT}/" 2>/dev/null; then
-            bashio::log.info "T3 Code is up. One-time pairing link for a new browser:"
-            t3 pair --label "Home Assistant add-on" 2>&1 || bashio::log.warning "Could not mint a pairing link"
-            bashio::log.info "If the link shows a 172.30.x.x address, replace it with your Home Assistant host and port ${PORT}."
-            exit 0
-        fi
-        sleep 2
-    done
-    bashio::log.warning "T3 Code did not answer on port ${PORT} within 2 minutes"
-) &
+# --- Run the gateway ------------------------------------------------------------
+# The gateway serves T3 Code in the Home Assistant sidebar (Ingress), starts a
+# T3 Code server per Home Assistant user, and signs each user in for them.
+export GATEWAY_PORT=8099
+export GATEWAY_DATA_DIR=/data
+export GATEWAY_WEB_ROOT=/opt/t3code-web
+export GATEWAY_WORKSPACE="${HA_CONFIG}"
 
-# --- Run -----------------------------------------------------------------------
+# Optional direct port (Network section of the add-on) for the T3 phone apps
+# or Tailscale: forwarded to one user's T3 Code, protected by T3's pairing.
+direct_port="$(bashio::addon.port 3773 || true)"
+if bashio::var.has_value "${direct_port}" && [[ "${direct_port}" != "null" ]]; then
+    if bashio::config.has_value 'direct_access_user'; then
+        export GATEWAY_DIRECT_PORT=3773
+        GATEWAY_DIRECT_USER="$(bashio::config 'direct_access_user')"
+        export GATEWAY_DIRECT_USER
+    else
+        bashio::log.warning "Direct port ${direct_port} is enabled but direct_access_user is not set; it stays closed."
+    fi
+fi
+
 cd "${HA_CONFIG}"
-bashio::log.info "Starting T3 Code $(t3 --version 2>/dev/null || echo '') on port ${PORT}"
-exec t3 serve \
-    --mode web \
-    --host 0.0.0.0 \
-    --port "${PORT}" \
-    --no-browser \
-    --auto-bootstrap-project-from-cwd
+bashio::log.info "Starting T3 Code $(t3 --version 2>/dev/null || echo '') (open it from the Home Assistant sidebar)"
+exec node /opt/gateway/server.mjs

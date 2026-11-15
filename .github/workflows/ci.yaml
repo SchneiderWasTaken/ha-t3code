@@ -15,6 +15,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
+      - name: Check gateway syntax
+        run: node --check t3code/gateway/server.mjs && node --check t3code/gateway/ingress-shim.js && node --check tests/e2e/run.mjs
       - name: Lint add-on config
         uses: frenck/action-addon-linter@v2
         with:
@@ -22,15 +24,40 @@ jobs:
       - name: ShellCheck
         run: |
           shellcheck -s bash \
+            scripts/*.sh t3code/scripts/*.sh \
             t3code/rootfs/usr/local/bin/* \
             t3code/rootfs/etc/s6-overlay/s6-rc.d/t3code/run \
             t3code/rootfs/etc/s6-overlay/s6-rc.d/t3code/finish
+
+  # T3 Code from source + our patches, behind the gateway and a fake Ingress,
+  # driven by a real browser. Catches upstream changes that break the add-on.
+  e2e:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - name: Read Node version
+        id: node
+        run: echo "version=$(yq -r '.args.NODE_BUILD_VERSION' t3code/build.yaml)" >> "$GITHUB_OUTPUT"
+      - uses: actions/setup-node@v5
+        with:
+          node-version: ${{ steps.node.outputs.version }}
+      - name: Verify T3 Code + patches end to end
+        run: mkdir -p "$TMPDIR" && scripts/verify-upstream.sh "$RUNNER_TEMP/verify"
+        env:
+          TMPDIR: ${{ runner.temp }}/e2e
+      - name: Upload e2e artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-artifacts
+          path: ${{ runner.temp }}/e2e
+          if-no-files-found: ignore
 
   # Builds each architecture on a native runner (no QEMU). On main, the
   # images are pushed to GHCR so Home Assistant pulls them instead of
   # building on the device.
   build:
-    needs: lint
+    needs: [lint, e2e]
     strategy:
       fail-fast: false
       matrix:
@@ -55,6 +82,7 @@ jobs:
             echo "version=$(yq -r '.version' "${ADDON}/config.yaml")"
             echo "build_from=$(yq -r '.build_from.${{ matrix.arch }}' "${ADDON}/build.yaml")"
             echo "t3code_version=$(yq -r '.args.T3CODE_VERSION' "${ADDON}/build.yaml")"
+            echo "node_build_version=$(yq -r '.args.NODE_BUILD_VERSION' "${ADDON}/build.yaml")"
             echo "node_major=$(yq -r '.args.NODE_MAJOR' "${ADDON}/build.yaml")"
             echo "agent_npm_packages=$(yq -r '.args.AGENT_NPM_PACKAGES' "${ADDON}/build.yaml")"
           } >> "$GITHUB_OUTPUT"
@@ -81,6 +109,7 @@ jobs:
             BUILD_ARCH=${{ matrix.arch }}
             BUILD_VERSION=${{ steps.meta.outputs.version }}
             T3CODE_VERSION=${{ steps.meta.outputs.t3code_version }}
+            NODE_BUILD_VERSION=${{ steps.meta.outputs.node_build_version }}
             NODE_MAJOR=${{ steps.meta.outputs.node_major }}
             AGENT_NPM_PACKAGES=${{ steps.meta.outputs.agent_npm_packages }}
           tags: |

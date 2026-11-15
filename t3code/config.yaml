@@ -1,5 +1,5 @@
 name: T3 Code
-version: "0.1.1"
+version: "0.2.0"
 slug: t3code
 description: >-
   A web UI for coding agents (Claude Code, Codex, OpenCode, ...) with your
@@ -13,14 +13,21 @@ arch:
 # s6-overlay from the HA base image is PID 1.
 init: false
 
-# T3 Code's web client builds API/WebSocket URLs from window.location.origin,
-# so it can't run under the Ingress sub-path yet. Direct port for now.
-# See docs/ARCHITECTURE.md -> "Ingress".
+# Opens in the Home Assistant sidebar. Home Assistant handles sign-in; the
+# gateway gives each user their own T3 Code and signs them in to it.
+ingress: true
+ingress_port: 8099
+panel_icon: mdi:robot-outline
+panel_title: T3 Code
+# Admin-only until per-user sandboxes land (docs/ARCHITECTURE.md).
+panel_admin: true
+
+# Optional direct port for the T3 phone apps or Tailscale. Closed unless you
+# set a port in the add-on's Network section and `direct_access_user`.
 ports:
-  3773/tcp: 3773
+  3773/tcp: null
 ports_description:
-  3773/tcp: T3 Code web UI and API
-webui: "http://[HOST]:[PORT:3773]"
+  3773/tcp: Direct T3 Code access (phone apps, Tailscale), uses T3 pairing
 
 # Exposes SUPERVISOR_TOKEN and the http://supervisor/core/api proxy, which
 # the agent helpers and the Home Assistant MCP wiring use.
@@ -45,6 +52,7 @@ options:
 
 schema:
   log_level: list(trace|debug|info|notice|warning|error|fatal)
+  direct_access_user: str?
   telemetry: bool
   homeassistant_mcp: bool
   agent_context: bool

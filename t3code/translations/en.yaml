@@ -2,6 +2,11 @@ configuration:
   log_level:
     name: Log level
     description: How much the T3 Code server logs.
+  direct_access_user:
+    name: Direct port user
+    description: >-
+      Home Assistant username whose T3 Code the optional direct port opens
+      (for the T3 phone apps or Tailscale). Leave empty to keep it closed.
   telemetry:
     name: Product telemetry
     description: >-
@@ -30,4 +35,4 @@ configuration:
       Passed to T3 Code and every agent it starts, e.g. ANTHROPIC_API_KEY or
       OPENAI_API_KEY.
 network:
-  3773/tcp: T3 Code web UI and API
+  3773/tcp: Direct T3 Code access (phone apps, Tailscale)
