@@ -6,6 +6,7 @@ build_from:
 args:
   T3CODE_VERSION: "0.1.9"
   NODE_MAJOR: "22"
-  # Agent harnesses baked into the image. Space-separated npm packages.
+  # Agent harnesses baked into the image, pinned so a build is reproducible
+  # and a compromised upstream release can't slip in unreviewed.
   # Users can add more at runtime with the `extra_npm_packages` option.
-  AGENT_NPM_PACKAGES: "@anthropic-ai/claude-code @openai/codex opencode-ai"
+  AGENT_NPM_PACKAGES: "@anthropic-ai/claude-code@2.1.325 @openai/codex@0.169.0 opencode-ai@1.19.5"

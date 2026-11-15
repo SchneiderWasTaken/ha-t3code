@@ -76,7 +76,8 @@ fi
 
 # --- Home Assistant MCP server for each harness --------------------------------
 # Requires the "Model Context Protocol Server" integration enabled in HA.
-# SUPERVISOR_TOKEN changes between starts, so this is rewritten every time.
+# No config file stores the token: each harness reads SUPERVISOR_TOKEN from
+# its environment, which s6 passes down to T3 Code and the agents it starts.
 configure_mcp() {
     local claude_json="${HOME}/.claude.json"
     local opencode_json="${HOME}/.config/opencode/opencode.json"
@@ -84,13 +85,16 @@ configure_mcp() {
     local begin="# >>> ha-t3code managed >>>" end="# <<< ha-t3code managed <<<"
 
     [[ -s "${claude_json}" ]] || echo '{}' > "${claude_json}"
-    jq --arg url "${MCP_URL}" --arg tok "${SUPERVISOR_TOKEN}" \
-        '.mcpServers.homeassistant = {type: "http", url: $url, headers: {Authorization: ("Bearer " + $tok)}}' \
+    # ${SUPERVISOR_TOKEN} is expanded by Claude Code from its environment at
+    # connect time, so the token itself never lands in the file (or backups).
+    jq --arg url "${MCP_URL}" \
+        '.mcpServers.homeassistant = {type: "http", url: $url, headers: {Authorization: "Bearer ${SUPERVISOR_TOKEN}"}}' \
         "${claude_json}" > "${claude_json}.tmp" && mv "${claude_json}.tmp" "${claude_json}"
 
     [[ -s "${opencode_json}" ]] || jq -n '{"$schema": "https://opencode.ai/config.json"}' > "${opencode_json}"
-    jq --arg url "${MCP_URL}" --arg tok "${SUPERVISOR_TOKEN}" \
-        '.mcp.homeassistant = {type: "remote", url: $url, enabled: true, headers: {Authorization: ("Bearer " + $tok)}}' \
+    # OpenCode substitutes {env:...} when it loads the config.
+    jq --arg url "${MCP_URL}" \
+        '.mcp.homeassistant = {type: "remote", url: $url, enabled: true, headers: {Authorization: "Bearer {env:SUPERVISOR_TOKEN}"}}' \
         "${opencode_json}" > "${opencode_json}.tmp" && mv "${opencode_json}.tmp" "${opencode_json}"
 
     # Codex reads the token from the server's environment, so nothing secret

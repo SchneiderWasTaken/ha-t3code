@@ -58,6 +58,30 @@ this environment (where the config lives, check before reload, don't touch
 **Agents can edit your live configuration.** Put `/homeassistant` under git
 (or take a backup) before you start.
 
+## Security
+
+This add-on gives AI agents a shell, write access to your configuration and
+an API token that can control everything in Home Assistant. Treat access to
+it like admin access to Home Assistant.
+
+- **Who can reach it.** Port 3773 is open on your home network (and your
+  tailnet, if Home Assistant runs Tailscale). Don't forward it on your
+  router. A browser only gets in after pairing with a one-time link from the
+  add-on log, which only Home Assistant admins can read.
+- **Use an encrypted path.** The port is plain HTTP. Prefer Tailscale or an
+  HTTPS reverse proxy over connecting across Wi-Fi.
+- **Keep approvals on.** Entity names, device attributes and files are text
+  an agent reads, and a hostile one can try to steer it ("prompt
+  injection"). Leave T3 Code's permission mode on approval for commands and
+  service calls; don't use full-auto modes here.
+- **Review paired devices** under **Settings → Sharing & access** in T3 Code
+  and remove ones you don't recognise.
+- **Backups.** Agent logins and the `env_vars` option are stored in the
+  add-on's data, so they're in Home Assistant backups. Keep backups
+  encrypted (the default on current Home Assistant).
+- **Snapshots.** Put `/homeassistant` under git or take a backup before
+  letting an agent change it.
+
 ## Options
 
 | Option | Default | |
