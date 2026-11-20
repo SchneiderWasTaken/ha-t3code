@@ -162,8 +162,10 @@ class Instance {
     const [cmd, ...pre] = CONFIG.t3Command;
     this.proc = spawn(
       cmd,
+      // `serve` never bootstraps a project (ensureWorkspaceProject does it),
+      // and since T3 Code 0.1.10 it rejects --auto-bootstrap-project-from-cwd.
       [...pre, "serve", "--mode", "web", "--host", "127.0.0.1", "--port", String(this.port),
-        "--no-browser", "--auto-bootstrap-project-from-cwd"],
+        "--no-browser"],
       { cwd: CONFIG.workspace, env: this.env, stdio: ["ignore", "pipe", "pipe"] },
     );
     const prefix = `[t3:${this.user.name}] `;

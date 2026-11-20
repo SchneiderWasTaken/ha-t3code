@@ -44,15 +44,25 @@ jobs:
           fi
           target="${target#v}"
           branch="upstream/t3code-v${target}"
-          echo "current=${current}" >> "$GITHUB_OUTPUT"
-          echo "target=${target}" >> "$GITHUB_OUTPUT"
-          echo "branch=${branch}" >> "$GITHUB_OUTPUT"
+          {
+            echo "current=${current}"
+            echo "target=${target}"
+            echo "branch=${branch}"
+          } >> "$GITHUB_OUTPUT"
           newest="$(printf '%s\n%s\n' "${current}" "${target}" | sort -V | tail -1)"
           if [[ "${target}" == "${current}" || "${newest}" != "${target}" ]]; then
             echo "Already on T3 Code ${current}; nothing to do."
             echo "skip=true" >> "$GITHUB_OUTPUT"
           elif git ls-remote --exit-code --heads origin "${branch}" >/dev/null; then
-            echo "${branch} already exists; leaving it alone."
+            # A PR (open, merged or closed) already covers this version. A branch
+            # without one means an earlier run pushed but couldn't open the PR;
+            # say so loudly instead of skipping quietly every day.
+            prs="$(gh pr list --head "${branch}" --state all --json number --jq length)"
+            if [[ "${prs}" == "0" ]]; then
+              echo "::error::${branch} exists but has no pull request. Open one from it, or delete the branch to retry the bump."
+              exit 1
+            fi
+            echo "${branch} already exists with a PR; leaving it alone."
             echo "skip=true" >> "$GITHUB_OUTPUT"
           else
             echo "Bumping T3 Code ${current} -> ${target}"
@@ -105,8 +115,23 @@ jobs:
           set -o pipefail
           TMPDIR="$RUNNER_TEMP/e2e" scripts/verify-upstream.sh "$RUNNER_TEMP/verify" 2>&1 | tee "$RUNNER_TEMP/verify.log"
 
-      - name: Ask Claude to repair the add-on for the new upstream
+      - name: Check for Claude credentials
         if: steps.target.outputs.skip == 'false' && steps.verify.outcome == 'failure'
+        id: claude_creds
+        env:
+          HAS_KEY: ${{ secrets.ANTHROPIC_API_KEY != '' || secrets.CLAUDE_CODE_OAUTH_TOKEN != '' }}
+        run: |
+          echo "available=${HAS_KEY}" >> "$GITHUB_OUTPUT"
+          if [[ "${HAS_KEY}" != "true" ]]; then
+            echo "::warning::Neither ANTHROPIC_API_KEY nor CLAUDE_CODE_OAUTH_TOKEN is set; skipping the automated repair. The PR will need a human."
+          fi
+
+      # continue-on-error: whatever happens here, the branch is still pushed and
+      # a PR opened, so a failed bump is never silent.
+      - name: Ask Claude to repair the add-on for the new upstream
+        if: steps.target.outputs.skip == 'false' && steps.verify.outcome == 'failure' && steps.claude_creds.outputs.available == 'true'
+        id: claude
+        continue-on-error: true
         uses: anthropics/claude-code-action@v1
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
@@ -148,7 +173,7 @@ jobs:
             ${{ runner.temp }}/claude-summary.md.
 
       - name: Re-verify after Claude
-        if: steps.target.outputs.skip == 'false' && steps.verify.outcome == 'failure'
+        if: steps.target.outputs.skip == 'false' && steps.verify.outcome == 'failure' && steps.claude_creds.outputs.available == 'true'
         id: reverify
         continue-on-error: true
         run: |
@@ -178,30 +203,44 @@ jobs:
           elif [[ "${{ steps.reverify.outcome }}" == "success" ]]; then
             status="Verification failed after the bump; Claude repaired it and verification now passes. Review Claude's commit carefully."
             ok=true
+          elif [[ "${{ steps.claude_creds.outputs.available }}" != "true" ]]; then
+            status="**Verification fails** and Claude isn't configured (set the \`ANTHROPIC_API_KEY\` or \`CLAUDE_CODE_OAUTH_TOKEN\` secret for automated repair). Needs a human."
+            ok=false
           else
-            status="**Verification still fails** (Claude's attempt didn't fix it, or Claude isn't configured). Needs a human."
+            status="**Verification still fails**: Claude's attempt (${{ steps.claude.outcome }}) didn't fix it. Needs a human."
             ok=false
           fi
           summary=""
           [[ -f "$RUNNER_TEMP/claude-summary.md" ]] && summary="$(cat "$RUNNER_TEMP/claude-summary.md")"
+          failure=""
+          if [[ "${ok}" != "true" ]]; then
+            log="$RUNNER_TEMP/reverify.log"
+            [[ -f "${log}" ]] || log="$RUNNER_TEMP/verify.log"
+            failure="$(tail -n 60 "${log}" 2>/dev/null || true)"
+          fi
 
-          body="$(cat <<EOF
-          Updates T3 Code from **${current}** to **${target}**
-          ([release notes](https://github.com/pingdotgg/t3code/releases/tag/v${target})).
-
-          ${status}
-
-          ${summary:+### Claude's summary
-
-          ${summary}
-          }
-          Workflow run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-
-          🤖 Opened automatically by \`.github/workflows/upstream.yaml\`.
-          EOF
-          )"
+          body="$RUNNER_TEMP/pr-body.md"
+          {
+            echo "Updates T3 Code from **${current}** to **${target}**"
+            echo "([release notes](https://github.com/pingdotgg/t3code/releases/tag/v${target}))."
+            echo
+            echo "${status}"
+            echo
+            if [[ -n "${summary}" ]]; then
+              echo "### Claude's summary"
+              echo
+              echo "${summary}"
+              echo
+            fi
+            if [[ -n "${failure}" ]]; then
+              printf '<details><summary>End of the failing verification log</summary>\n\n~~~~text\n%s\n~~~~\n\n</details>\n\n' "${failure}"
+            fi
+            echo "Workflow run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+            echo
+            echo "🤖 Opened automatically by \`.github/workflows/upstream.yaml\`."
+          } > "${body}"
           gh pr create --base main --head "${branch}" \
-            --title "Update T3 Code to ${target}" --body "${body}"
+            --title "Update T3 Code to ${target}" --body-file "${body}"
           # Pushes made with GITHUB_TOKEN don't start other workflows, so start CI
           # (lint, e2e and the image builds) on the branch explicitly.
           gh workflow run ci.yaml --ref "${branch}"
